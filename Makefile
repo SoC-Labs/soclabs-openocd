@@ -35,10 +35,22 @@ ahb_qspi_SRC  := $(ahb_qspi_ROOT)/sw/openocd/ahb_qspi.c
 # compiled.
 ahb_qspi_DEST := src/flash/nor
 
-# Second driver, pending its v0.12.0 back-port (owned by the HOSTIO session).
-# hostio4 is a dapdirect ADAPTER driver -- it emulates a MEM-AP in software over
-# the HOSTIO4/ADP link -- so it lands in src/jtag/drivers, not src/flash/nor.
-# Uncomment when patches/0002-register-hostio4-v0.12.0.patch exists:
+# Second driver: a dapdirect ADAPTER, emulating a MEM-AP in software over the
+# HOSTIO4/ADP link, so it lands in src/jtag/drivers rather than src/flash/nor.
+# An adapter is a bigger registration than a flash driver -- its patch also
+# touches configure.ac and src/jtag/interfaces.c (at v0.12.0 the adapter externs
+# live in interfaces.c; master moved them to interface.h, so the two are not
+# interchangeable, same as for ahb_qspi).
+# BUILT AND PROVEN at v0.12.0 (both drivers embedded, 'adapter list' shows
+# hostio4), but left OFF by default for ONE reason: the canonical hostio4.c in
+# the owning repo is the MASTER spelling and does not compile at this pin --
+# it uses .transport_ids, which v0.12.0's struct adapter_driver does not have.
+# Enabling it here would break a default `make build`.
+#
+# To turn it on: apply patches/hostio4-single-source-guard.patch UPSTREAM (to
+# the owning repo's hostio4.c), then uncomment these four lines. The guard makes
+# one source build at both revisions, so no override is needed afterwards.
+# Until then it builds with:  make build hostio4_SRC=/path/to/guarded/hostio4.c
 #DRIVERS       += hostio4
 #hostio4_ROOT  ?= ../nanosoc-ethernet-chiplet/scripts/rig/eth_chiplet/openocd_hostio4
 #hostio4_SRC   := $(hostio4_ROOT)/hostio4.c
@@ -58,6 +70,9 @@ CONFIGURE_FLAGS  ?=
 # driver.h, so the two patches are NOT interchangeable. Keep this in step with
 # openocd.pin's sha.
 PATCHES          := patches/0001-register-ahb_qspi-v0.12.0.patch
+# Add back when hostio4 is enabled above (it registers the adapter in
+# configure.ac, src/jtag/drivers/Makefile.am and src/jtag/interfaces.c):
+#PATCHES         += patches/0002-register-hostio4-v0.12.0.patch
 
 # Adapter selection (--enable-cmsis-dap, --enable-ftdi, ...) is deliberately
 # NOT hardcoded here: that choice belongs to whoever is planning the target
@@ -172,7 +187,21 @@ overlay: patch
 	@echo "overlay: $(words $(DRIVERS)) driver(s) linked: $(DRIVERS)"
 
 # --- build: configure + compile -------------------------------------------
+# NOTE the stamp. An ADAPTER driver's patch edits configure.ac, so a tree that
+# was already configured against the previous patch set has a stale configure
+# script and a stale Makefile -- it would build happily and silently omit the
+# new driver, which is exactly the failure `verify` exists to catch, arriving
+# one step earlier. Changing PATCHES therefore forces a re-bootstrap.
+PATCH_STAMP := $(BUILD_DIR)/.soclabs-patch-stamp
+
 build: overlay
+	@want="$$(cat $(PATCHES) | md5sum | cut -d' ' -f1)"; \
+	got="$$(cat $(PATCH_STAMP) 2>/dev/null)"; \
+	if [ "$$want" != "$$got" ] && [ -f $(BUILD_DIR)/Makefile ]; then \
+		echo "build: patch set changed -- forcing re-bootstrap (configure.ac may have moved)"; \
+		rm -f $(BUILD_DIR)/Makefile $(BUILD_DIR)/configure; \
+	fi; \
+	echo "$$want" > $(PATCH_STAMP)
 	@if [ ! -x $(BUILD_DIR)/configure ]; then \
 		echo "build: bootstrapping (autoreconf) $(BUILD_DIR)"; \
 		(cd $(BUILD_DIR) && ./bootstrap); \

@@ -1,0 +1,42 @@
+# NOT part of PATCHES. This one belongs UPSTREAM, in the repo that owns hostio4.c.
+#
+# It makes ONE hostio4.c build at BOTH v0.12.0 and master, so the driver does
+# not need a separate back-ported copy. TRANSPORT_DAPDIRECT_SWD is a #define
+# (BIT(5), transport/transport.h) on master and absent at v0.12.0, so #ifdef is
+# a real feature test. master REMOVED .transports, so no single spelling works
+# at both and the guard is required rather than stylistic.
+#
+# Proven: gcc -fsyntax-only rc=0 at BOTH revisions, and the preprocessor takes
+# a different branch at each (.transport_ids present: v0.12.0 -> 0, master -> 1).
+# Built and linked at v0.12.0; 'adapter list' reports hostio4 at runtime.
+#
+# Once applied upstream, uncomment hostio4 in the Makefile registry and no
+# hostio4_SRC= override is needed.
+--- /home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet/scripts/rig/eth_chiplet/openocd_hostio4/hostio4.c	2026-09-17 16:06:12.108225237 +0100
++++ /tmpdir/claude-74755/-home-dam1n19-SoCLabs-nanosoc-ethernet-chiplet/c40358eb-c6fa-41fd-b19d-46d673b36e53/scratchpad/hostio4_unified.c	2026-09-17 22:23:36.945730546 +0100
+@@ -1283,10 +1283,25 @@
+ 	.run = hostio4_dp_run,
+ };
+ 
++#ifndef TRANSPORT_DAPDIRECT_SWD
++static const char *const hostio4_transport[] = { "dapdirect_swd", NULL };
++#endif
++
+ struct adapter_driver hostio4_adapter_driver = {
+ 	.name = "hostio4",
++#ifdef TRANSPORT_DAPDIRECT_SWD
++	/* master: a bitmask of transport IDs. TRANSPORT_DAPDIRECT_SWD is a
++	 * #define (BIT(5)) in transport/transport.h, so #ifdef is a valid
++	 * feature test -- the symbol does not exist at all in v0.12.0. */
+ 	.transport_ids = TRANSPORT_DAPDIRECT_SWD,
+ 	.transport_preferred_id = TRANSPORT_DAPDIRECT_SWD,
++#else
++	/* v0.12.0: a NULL-terminated string vector instead (interface.h:212),
++	 * modelled on rshim.c:513 at that tag. master REMOVED this member, so
++	 * the two spellings are mutually exclusive and the guard is required
++	 * -- one source then builds at both revisions. */
++	.transports = hostio4_transport,
++#endif
+ 	.commands = hostio4_command_handlers,
+ 
+ 	.init = hostio4_init,
