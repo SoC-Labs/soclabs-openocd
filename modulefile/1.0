@@ -1,0 +1,91 @@
+#%Module1.0
+##
+## soclabs-openocd/1.0 -- OpenOCD built with the SoC Labs flash drivers
+##
+## Loading this PREPENDS a built openocd's bin/ to PATH, so it shadows any
+## system/site openocd for users who load it, and changes nothing for users
+## who don't. It starts nothing and opens no connection -- it only makes the
+## right `openocd` resolve first on PATH. See the soclabs-openocd repo's
+## README.md for what "the right openocd" means here (upstream OpenOCD,
+## unforked, with the ahb_qspi -- and any later-registered -- NOR flash
+## driver's three-line registration patch applied and that driver's .c
+## overlaid in from the IP repo that owns it).
+##
+## STATUS AS OF THIS MODULEFILE: the ahb_qspi driver is UNBUILT AND UNTESTED
+## (see the repo README). This module will still load -- it just warns, and
+## leaves PATH alone, if it can't find a built binary. Loading it is not a
+## claim that the driver works, only that PATH now prefers the binary that,
+## once built, will carry it.
+##
+proc ModulesHelp { } {
+    puts stderr "soclabs-openocd (OpenOCD + SoC Labs flash drivers, e.g. ahb_qspi)"
+    puts stderr ""
+    puts stderr "WHAT THIS DOES  Prepends <install-prefix>/bin to PATH, so 'openocd' resolves"
+    puts stderr "                to the build that carries the SoC Labs driver(s) instead of"
+    puts stderr "                any system copy. Nothing else is touched: no env var beyond"
+    puts stderr "                PATH, no channel opened, no board contacted."
+    puts stderr ""
+    puts stderr "FINDING THE BUILD  Looked for, in order:"
+    puts stderr "  1. \$SOCLABS_OPENOCD_ROOT/bin/openocd        (explicit override)"
+    puts stderr "  2. /research/CAD/soclabs-openocd/install/bin/openocd   (guessed site path --"
+    puts stderr "     NOT a confirmed convention; this recipe has not been deployed to a site"
+    puts stderr "     location yet. Set SOCLABS_OPENOCD_ROOT if it lives somewhere else, e.g. a"
+    puts stderr "     personal checkout: SOCLABS_OPENOCD_ROOT=~/soclabs-openocd/install)"
+    puts stderr ""
+    puts stderr "  If neither resolves to a built binary, load prints a warning to stderr and"
+    puts stderr "  PATH is left untouched -- this module never puts a non-existent directory"
+    puts stderr "  ahead of your system openocd."
+    puts stderr ""
+    puts stderr "BUILDING IT  In the soclabs-openocd repo: make fetch patch overlay build verify"
+    puts stderr ""
+    puts stderr "VERIFYING IT LOADED THE RIGHT ONE"
+    puts stderr "  which openocd                         should print the path this module set"
+    puts stderr "  strings \$(which openocd) | grep ahb_qspi   should find the driver name"
+    puts stderr ""
+    puts stderr "Repo: soclabs-openocd (see its README.md; not a fork of upstream OpenOCD)."
+}
+module-whatis "OpenOCD built with SoC Labs's own NOR flash drivers (ahb_qspi, ...) registered in; PATH-only, prepended, opt-in"
+
+# --- conflicts ---------------------------------------------------------------
+# Self-conflict against another loaded version of this same module, so two
+# builds (e.g. a personal vs. a site one) can't both land on PATH at once
+# and leave "which openocd" depending on load order. No conflict is declared
+# against any system/vendor openocd module: this module does not setenv
+# anything that a plain PATH-prepending openocd module would also set, and
+# unlike the HAPS-SX bench tooling this replaces no multi-variable contract --
+# it only ever changes where 'openocd' resolves. If a same-purpose module
+# already exists at this site under a different name, add it here.
+conflict soclabs-openocd
+
+# --- locate the build, override-then-default (mirrors haps-dev/1.0's
+#     HAPS_HWSERVER_BIN / CONFPRO_SX_TOOLS_ROOT candidate-search idiom) -------
+# NOT auto-discovered from this modulefile's own location: plain Tcl
+# modulefiles (this site runs modulecmd, not Lmod) have no portable "path to
+# the file currently being sourced", so the search is explicit candidates,
+# same as the rest of this site's modules do it.
+set soclabs_openocd_candidates {}
+if {[info exists env(SOCLABS_OPENOCD_ROOT)] && $env(SOCLABS_OPENOCD_ROOT) ne ""} {
+    lappend soclabs_openocd_candidates $env(SOCLABS_OPENOCD_ROOT)
+}
+# Guessed, unconfirmed site path -- this recipe has not been placed anywhere
+# yet (see the repo README: this whole tree is a proposal). Update this
+# candidate, or drop it, once a real site location is chosen; until then
+# SOCLABS_OPENOCD_ROOT is the only reliable way to point this module at a
+# build.
+lappend soclabs_openocd_candidates /research/CAD/soclabs-openocd/install
+
+set soclabs_openocd_root ""
+foreach candidate $soclabs_openocd_candidates {
+    if {[file executable $candidate/bin/openocd]} { set soclabs_openocd_root $candidate; break }
+}
+
+if {$soclabs_openocd_root ne ""} {
+    prepend-path PATH $soclabs_openocd_root/bin
+} elseif {[module-info mode load]} {
+    puts stderr "soclabs-openocd: no built openocd found. Looked in:"
+    foreach candidate $soclabs_openocd_candidates {
+        puts stderr "    $candidate/bin/openocd"
+    }
+    puts stderr "  PATH left unchanged. Build it (make fetch patch overlay build verify in the"
+    puts stderr "  soclabs-openocd repo) or set SOCLABS_OPENOCD_ROOT=<install prefix> and reload."
+}

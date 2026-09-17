@@ -1,0 +1,71 @@
+# openocd.pin -- the exact upstream revision patches/*.patch is written against
+#
+# The Makefile's `fetch` target parses the `sha:` line below with a plain
+# sed and refuses to continue if the checked-out commit doesn't match it
+# exactly. Keep this a single unambiguous "sha:" line.
+
+upstream:    https://github.com/openocd-org/openocd.git
+sha:         9ea7f3d647c8ecf6b0f1424002dfc3f4504a162c
+pinned-on:   2026-09-17  (repinned master -> v0.12.0 same day)
+commit-date: 2023-01-14T23:14:31+03:00
+commit-subj: The openocd-0.12.0 release   [tag: v0.12.0]
+
+# WHY THIS REVISION
+#
+# It is the v0.12.0 release tag, chosen to MATCH THE BENCH: haps-dev runs
+# 0.12.0, so this is the bench's own revision rather than an arbitrary one.
+# The full reasoning is under "REPINNED" at the bottom of this file.
+#
+# What makes it a workable base for the patch, verified in the pinned tree:
+#
+#   - src/flash/nor/max32xxx.c is the closest existing template for a
+#     memory-mapped NOR flash driver register layout -- useful to whoever
+#     reviews or extends ahb_qspi.c against upstream conventions. (NOTE:
+#     max32xxx_qspi.c, the closer match, is a LATER addition and does NOT
+#     exist at this tag. Do not go looking for it here.)
+#   - driver.h / drivers.c / Makefile.am are in the alphabetically-sorted
+#     state the v0.12.0 patch assumes: "ahb_qspi" sorts immediately after
+#     "aducm360" and before "ambiqmicro", which is where its hunks land.
+#     (The MASTER patch instead assumes am13e230x/artery as the following
+#     entry -- drivers that did not exist in 2023. That is the concrete
+#     reason the two patches are not interchangeable.)
+#
+# No CVE or regression is being chased by this pin. It exists so the patch has
+# one fixed, re-diffable base -- re-running `fetch` against a moving "master"
+# would eventually drift the context lines out from under it and turn a clean
+# insertion into a manual merge.
+#
+# BUMPING THE PIN
+#
+# 1. Re-derive the patch against the new commit (the three hunks are each
+#    one line; regenerating by hand is faster than trusting a 3-way merge
+#    silently getting it wrong).
+# 2. Confirm aducm360/am13* are still adjacent to where ahb_qspi lands in
+#    all three files -- if upstream renamed or resorted anything nearby,
+#    the patch context needs updating, not just the sha here.
+# 3. Update sha / pinned-on / commit-date / commit-subj together, in one
+#    commit, so a `git log` on this file is a legible history of what was
+#    validated when.
+
+# REPINNED 2026-09-17: master -> v0.12.0.
+#
+# haps-dev runs OpenOCD 0.12.0 (/usr/local/bin/openocd, built from source, not a
+# package). Building master there would put a DIFFERENT OpenOCD version on the
+# bench than every existing config and script has been validated against, for no
+# gain -- the driver needs nothing master added.
+#
+# Verified 2026-09-17 against v0.12.0: configure OK, `make -j8` OK, ZERO warnings
+# in ahb_qspi.c's translation unit, `strings src/openocd` contains "ahb_qspi",
+# and `flash bank ... ahb_qspi` is accepted (it fails on the missing target, not
+# on an unknown driver). The driver's .erase/.write signatures are identical in
+# v0.12.0 and master, which is why no source change was needed.
+#
+# TWO PATCHES EXIST -- pick the one matching your pin:
+#   patches/0001-register-ahb_qspi-v0.12.0.patch   <- for THIS pin. 2 files:
+#       in 0.12.0 the `extern` declarations live in drivers.c, so Makefile.am
+#       gets the source line and drivers.c gets BOTH the extern and the array
+#       entry.
+#   patches/0001-register-ahb_qspi.patch           <- for master. 3 files:
+#       master moved the externs out into driver.h.
+#   The master patch does NOT apply to v0.12.0 -- its context lines reference
+#   drivers (am13e230x, artery) that did not exist in 2023.

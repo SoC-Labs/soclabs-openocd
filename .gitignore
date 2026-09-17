@@ -1,0 +1,6 @@
+# The upstream clone and everything built from it. `make fetch` recreates it.
+build/
+# Default local install prefix.
+install/
+# Driver sources staged for a remote build; copies, never sources of truth.
+drivers-staged/

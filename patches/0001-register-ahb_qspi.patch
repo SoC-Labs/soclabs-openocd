@@ -1,0 +1,49 @@
+From: SoC Labs <noreply@soclabs.org>
+Subject: [PATCH] flash/nor: register the ahb_qspi driver
+
+Three one-line insertions into three already alphabetically-sorted
+lists, each next to the existing aducm360 entry. This does NOT add
+src/flash/nor/ahb_qspi.c to the tree -- that file is overlaid
+(symlinked) from the IP repo that owns it by `make overlay` before
+this patch's referenced symbol needs to resolve. See ../README.md
+and ../drivers/README.md.
+
+Generated against openocd.pin's pinned commit; see that file for the
+exact SHA this was captured from.
+---
+diff --git a/src/flash/nor/Makefile.am b/src/flash/nor/Makefile.am
+index 9a46cc3..0c05080 100644
+--- a/src/flash/nor/Makefile.am
++++ b/src/flash/nor/Makefile.am
+@@ -11,6 +11,7 @@ noinst_LTLIBRARIES += %D%/libocdflashnor.la
+ NOR_DRIVERS = \
+ 	%D%/aduc702x.c \
+ 	%D%/aducm360.c \
++	%D%/ahb_qspi.c \
+ 	%D%/am13e230x.c \
+ 	%D%/ambiqmicro.c \
+ 	%D%/artery.c \
+diff --git a/src/flash/nor/driver.h b/src/flash/nor/driver.h
+index e77a46d..16a6148 100644
+--- a/src/flash/nor/driver.h
++++ b/src/flash/nor/driver.h
+@@ -253,6 +253,7 @@ const struct flash_driver *flash_driver_find_by_name(const char *name);
+ // Keep in alphabetic order this list of drivers
+ extern const struct flash_driver aduc702x_flash;
+ extern const struct flash_driver aducm360_flash;
++extern const struct flash_driver ahb_qspi_flash;
+ extern const struct flash_driver am13_flash;
+ extern const struct flash_driver ambiqmicro_flash;
+ extern const struct flash_driver artery_flash;
+diff --git a/src/flash/nor/drivers.c b/src/flash/nor/drivers.c
+index 2183c4c..bc1fbef 100644
+--- a/src/flash/nor/drivers.c
++++ b/src/flash/nor/drivers.c
+@@ -19,6 +19,7 @@ static const struct flash_driver * const flash_drivers[] = {
+ 	// Keep in alphabetic order the list of drivers
+ 	&aduc702x_flash,
+ 	&aducm360_flash,
++	&ahb_qspi_flash,
+ 	&am13_flash,
+ 	&ambiqmicro_flash,
+ 	&artery_flash,
