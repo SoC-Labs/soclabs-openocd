@@ -51,7 +51,8 @@ Updated 2026-09-17.
 | Builds against **v0.12.0** (`9ea7f3d`, the current pin) | yes, 0 warnings |
 | Driver registered in the binary | yes -- `strings openocd` contains `ahb_qspi` |
 | `flash bank ... ahb_qspi` accepted at runtime | yes (fails on a missing target, NOT "unknown flash driver") |
-| Installed on haps-dev | yes -- `/opt/haps-openocd-ahb_qspi/0.12.0-ahb_qspi/bin/openocd` |
+| Installed on the bench | yes -- `/opt/soclabs-openocd/0.12.0-soclabs/bin/openocd` |
+| Gate run against that binary, on that host | yes -- `make verify HOST=haps-dev` rc=0; rc=2 for a driver genuinely absent |
 | **Has it erased or programmed a real part?** | **NO. Nothing below this line has touched silicon.** |
 
 The pin is v0.12.0 deliberately: haps-dev runs 0.12.0, and building master there
@@ -167,7 +168,7 @@ On the HAPS-SX bench, `haps-openocd` honours an environment variable -- no edit
 to the tool, the modulefile, or any shared config:
 
 ```sh
-export HAPS_OPENOCD_BIN=/opt/haps-openocd-ahb_qspi/0.12.0-ahb_qspi/bin/openocd
+export HAPS_OPENOCD_BIN=/opt/soclabs-openocd/0.12.0-soclabs/bin/openocd
 haps-openocd holders          # is the probe free? check BEFORE taking it
 haps-openocd up nanosoc
 ```
@@ -179,6 +180,14 @@ The sibling knob `HAPS_HWSERVER_BIN` works the same way and is documented in the
 `haps-dev` modulefile.
 
 Off the bench, just put the built `bin/` first on PATH, or invoke it by path.
+
+> **If you find `/opt/haps-openocd-ahb_qspi` on the bench, do not delete it
+> wholesale.** It is two different things sharing a parent. The install beside
+> it (`0.12.0-ahb_qspi/`) is dead and removable; `src/` is the LIVE build tree
+> this recipe drives, and removing it destroys the build. The installed binary
+> does not depend on the old prefix either way -- its data path is self-relative
+> (`bin/../share/openocd`), so the old-prefix strings you will find in it with
+> `strings` are build-tree artefacts, not a runtime dependency.
 
 ### 2. Declare the flash bank
 
