@@ -41,20 +41,19 @@ ahb_qspi_DEST := src/flash/nor
 # touches configure.ac and src/jtag/interfaces.c (at v0.12.0 the adapter externs
 # live in interfaces.c; master moved them to interface.h, so the two are not
 # interchangeable, same as for ahb_qspi).
-# BUILT AND PROVEN at v0.12.0 (both drivers embedded, 'adapter list' shows
-# hostio4), but left OFF by default for ONE reason: the canonical hostio4.c in
-# the owning repo is the MASTER spelling and does not compile at this pin --
-# it uses .transport_ids, which v0.12.0's struct adapter_driver does not have.
-# Enabling it here would break a default `make build`.
+# ENABLED 2026-09-18, once the canonical hostio4.c carried the single-source
+# guard (patches/hostio4-single-source-guard.patch, now applied upstream).
+# Before that it could not be enabled here: the owning repo's copy used the
+# MASTER spelling (.transport_ids), which v0.12.0's struct adapter_driver does
+# not have, so a default `make build` would have failed to compile.
 #
-# To turn it on: apply patches/hostio4-single-source-guard.patch UPSTREAM (to
-# the owning repo's hostio4.c), then uncomment these four lines. The guard makes
-# one source build at both revisions, so no override is needed afterwards.
-# Until then it builds with:  make build hostio4_SRC=/path/to/guarded/hostio4.c
-#DRIVERS       += hostio4
-#hostio4_ROOT  ?= ../nanosoc-ethernet-chiplet/scripts/rig/eth_chiplet/openocd_hostio4
-#hostio4_SRC   := $(hostio4_ROOT)/hostio4.c
-#hostio4_DEST  := src/jtag/drivers
+# Re-verified against the canonical file on the day it was enabled:
+# gcc -fsyntax-only rc=0 at BOTH v0.12.0 and master, with the preprocessor
+# taking a different branch at each. No hostio4_SRC= override is needed.
+DRIVERS       += hostio4
+hostio4_ROOT  ?= ../nanosoc-ethernet-chiplet/scripts/rig/eth_chiplet/openocd_hostio4
+hostio4_SRC   := $(hostio4_ROOT)/hostio4.c
+hostio4_DEST  := src/jtag/drivers
 
 # ---------------------------------------------------------------------------
 # Everything below this line is generic driver-registry plumbing; it should
@@ -70,9 +69,12 @@ CONFIGURE_FLAGS  ?=
 # driver.h, so the two patches are NOT interchangeable. Keep this in step with
 # openocd.pin's sha.
 PATCHES          := patches/0001-register-ahb_qspi-v0.12.0.patch
-# Add back when hostio4 is enabled above (it registers the adapter in
-# configure.ac, src/jtag/drivers/Makefile.am and src/jtag/interfaces.c):
-#PATCHES         += patches/0002-register-hostio4-v0.12.0.patch
+# hostio4 is an ADAPTER, so its registration reaches further than a flash
+# driver's: configure.ac, src/jtag/drivers/Makefile.am and src/jtag/interfaces.c
+# (at v0.12.0 the adapter externs live in interfaces.c; master moved them to
+# interface.h). Because it edits configure.ac, adding or removing it forces a
+# re-bootstrap -- see PATCH_STAMP below.
+PATCHES         += patches/0002-register-hostio4-v0.12.0.patch
 
 # Adapter selection (--enable-cmsis-dap, --enable-ftdi, ...) is deliberately
 # NOT hardcoded here: that choice belongs to whoever is planning the target
