@@ -10,11 +10,32 @@
 # a different branch at each (.transport_ids present: v0.12.0 -> 0, master -> 1).
 # Built and linked at v0.12.0; 'adapter list' reports hostio4 at runtime.
 #
-# Once applied upstream, uncomment hostio4 in the Makefile registry and no
-# hostio4_SRC= override is needed.
---- /home/dam1n19/SoCLabs/nanosoc-ethernet-chiplet/scripts/rig/eth_chiplet/openocd_hostio4/hostio4.c	2026-09-17 16:06:12.108225237 +0100
-+++ /tmpdir/claude-74755/-home-dam1n19-SoCLabs-nanosoc-ethernet-chiplet/c40358eb-c6fa-41fd-b19d-46d673b36e53/scratchpad/hostio4_unified.c	2026-09-17 22:23:36.945730546 +0100
-@@ -1283,10 +1283,25 @@
+# ALREADY APPLIED UPSTREAM, in nanosoc-ethernet-chiplet 1c805fb (2026-09-17).
+# This file is kept as the record of what that change was, and as the patch to
+# re-apply if the guard is ever lost. Because it is applied, `make build` needs
+# no hostio4_SRC= override and the Makefile's hostio4 registry lines are live
+# (enabled 2026-09-18, soclabs-openocd 306e146).
+#
+# WHERE IT APPLIES, and how:
+#
+#   repo:  nanosoc-ethernet-chiplet
+#   file:  scripts/rig/eth_chiplet/openocd_hostio4/hostio4.c   (the canonical
+#          copy -- the one the Makefile's hostio4_SRC resolves to)
+#
+#   forward, from that repo's root:   git apply -p1 <this-file>
+#                                     patch -p1 < this-file
+#   check it is already in:           git apply -p1 -R --check <this-file>
+#
+# The -p1 a/ b/ prefixes above are deliberate and stable. An earlier revision of
+# this header named an absolute path inside a session scratchpad on the +++ side;
+# that directory is transient and was never a dependency of the patch -- the
+# hunk only ever touched the canonical hostio4.c. Rewritten 2026-09-22, and the
+# hunk regenerated against the canonical file as it stands today (the comment
+# re-wrapped by one word between the original diff and the file, which was
+# enough to make the old hunk fail to apply).
+--- a/scripts/rig/eth_chiplet/openocd_hostio4/hostio4.c
++++ b/scripts/rig/eth_chiplet/openocd_hostio4/hostio4.c
+@@ -1295,10 +1295,25 @@
  	.run = hostio4_dp_run,
  };
  
@@ -33,8 +54,8 @@
 +#else
 +	/* v0.12.0: a NULL-terminated string vector instead (interface.h:212),
 +	 * modelled on rshim.c:513 at that tag. master REMOVED this member, so
-+	 * the two spellings are mutually exclusive and the guard is required
-+	 * -- one source then builds at both revisions. */
++	 * the two spellings are mutually exclusive and the guard is required --
++	 * one source then builds at both revisions. */
 +	.transports = hostio4_transport,
 +#endif
  	.commands = hostio4_command_handlers,
