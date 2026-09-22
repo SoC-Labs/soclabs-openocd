@@ -219,9 +219,26 @@ build: overlay
 	@$(MAKE) --no-print-directory verify-local
 
 # --- install: to PREFIX, then verify what actually landed there ------------
+# The manifest records, for the binary it sits beside: that binary's own md5,
+# and the md5 of each driver SOURCE it was built from. Both halves are needed.
+# The driver md5s are what makes staleness detectable at all. The binary md5 is
+# what stops the manifest drifting from the binary -- without it, a rebuild that
+# skipped the manifest would leave a stale manifest vouching for a new binary,
+# which is the same class of lie the manifest exists to catch.
+MANIFEST_DIR  = $(PREFIX)/share/soclabs-openocd
+MANIFEST      = $(MANIFEST_DIR)/build.manifest
+
 install: build
 	$(MAKE) -C $(BUILD_DIR) install
-	@$(MAKE) --no-print-directory verify-bin BIN="$(PREFIX)/bin/openocd"
+	@mkdir -p "$(MANIFEST_DIR)"
+	@{ echo "# soclabs-openocd build manifest -- written by 'make install'."; \
+	   echo "# 'make verify' compares these against the live binary and the"; \
+	   echo "# CURRENT driver sources. A mismatch means the binary is stale."; \
+	   echo "binary_md5 $$(md5sum '$(PREFIX)/bin/openocd' | cut -d' ' -f1)"; \
+	   $(foreach d,$(DRIVERS),echo "driver $(d) $$(md5sum '$(abspath $($(d)_SRC))' | cut -d' ' -f1)";) \
+	 } > "$(MANIFEST)"
+	@echo "install: manifest at $(MANIFEST)"
+	@$(MAKE) --no-print-directory verify-bin BIN="$(PREFIX)/bin/openocd" MANIFEST_IN="$(MANIFEST)"
 	@echo "install: $(PREFIX)/bin/openocd carries: $(DRIVERS)"
 
 # ---------------------------------------------------------------------------
@@ -253,7 +270,11 @@ verify:
 verify-local:
 	@$(MAKE) --no-print-directory verify-bin BIN="$(BUILD_DIR)/src/openocd"
 
-# verify-bin: the actual assertion, against one local binary.
+# verify-bin: the actual assertion, against one local binary. Two questions,
+# and they are NOT the same one asked twice:
+#   1. is each registered driver IN this binary?      (a strings match)
+#   2. was it built from the source that exists NOW?  (the manifest)
+# (1) alone passed for four days while the bench ran a stale driver.
 verify-bin:
 	@bin="$(BIN)"; \
 	if [ ! -x "$$bin" ]; then \
@@ -271,6 +292,36 @@ verify-bin:
 			fail=1; \
 		fi; \
 	done; \
+	m="$(MANIFEST_IN)"; \
+	if [ -z "$$m" ]; then m="$$(dirname "$$bin")/../share/soclabs-openocd/build.manifest"; fi; \
+	if [ ! -f "$$m" ]; then \
+		echo "verify: WARN -- no build manifest beside $$bin; freshness NOT checked." >&2; \
+		echo "        The drivers are present, but nothing records WHICH SOURCE built" >&2; \
+		echo "        them. Re-run 'make install' to write one." >&2; \
+	else \
+		want=$$(md5sum "$$bin" | cut -d' ' -f1); \
+		got=$$(awk '/^binary_md5/{print $$2}' "$$m"); \
+		if [ "$$want" != "$$got" ]; then \
+			echo "verify: FAIL -- the manifest does not describe this binary." >&2; \
+			echo "        manifest says $$got, binary is $$want. Something rebuilt without" >&2; \
+			echo "        re-installing, so the manifest is not evidence about this file." >&2; \
+			fail=1; \
+		else \
+			$(foreach d,$(DRIVERS), \
+			  rec=$$(awk -v n="$(d)" '$$1=="driver" && $$2==n {print $$3}' "$$m"); \
+			  cur=$$(md5sum "$(abspath $($(d)_SRC))" 2>/dev/null | cut -d' ' -f1); \
+			  if [ -n "$$cur" ] && [ "$$rec" != "$$cur" ]; then \
+			    echo "verify: FAIL -- '$(d)' is STALE in this binary." >&2; \
+			    echo "        built from $$rec" >&2; \
+			    echo "        source is  $$cur" >&2; \
+			    echo "        The driver IS present, so a name check passes -- it is the WRONG" >&2; \
+			    echo "        VERSION. Re-run 'make install' (or install-remote HOST=...)." >&2; \
+			    fail=1; \
+			  elif [ -n "$$cur" ]; then \
+			    echo "verify: OK   -- '$(d)' is current ($$cur)"; \
+			  fi; ) \
+		fi; \
+	fi; \
 	if [ $$fail -ne 0 ]; then \
 		echo "verify: GATE FAILED -- refusing to call this build good." >&2; \
 	fi; \
@@ -291,7 +342,7 @@ verify-remote:
 		echo "        Run: make install-remote HOST=$(HOST)" >&2; \
 		exit 1; \
 	fi
-	@fail=0; \
+	@fail=0; fresh=1; \
 	for d in $(DRIVERS); do \
 		if $(SSH) $(HOST) "strings '$(REMOTE_BIN)' | grep -qx $$d" 2>/dev/null; then \
 			echo "verify: OK   -- '$$d' embedded in $(HOST):$(REMOTE_BIN)"; \
@@ -300,11 +351,57 @@ verify-remote:
 			fail=1; \
 		fi; \
 	done; \
-	if [ $$fail -ne 0 ]; then \
-		echo "verify: GATE FAILED -- the bench would run a binary missing driver(s)." >&2; \
-		echo "        Fix it on $(HOST): make install-remote HOST=$(HOST)" >&2; \
+	m=$$(mktemp); \
+	if ! $(SSH) $(HOST) "cat '$(REMOTE_PREFIX)/share/soclabs-openocd/build.manifest'" > "$$m" 2>/dev/null || [ ! -s "$$m" ]; then \
+		echo "verify: WARN -- could not read the build manifest on $(HOST)." >&2; \
+		echo "        Either it was never written (run install-remote) or the ssh" >&2; \
+		echo "        failed. This is UNKNOWN, not a verdict about freshness." >&2; \
+		rm -f "$$m"; fresh=0; \
 	else \
-		echo "verify: $(HOST):$(REMOTE_BIN) carries all of: $(DRIVERS)"; \
+		want=$$($(SSH) $(HOST) "md5sum '$(REMOTE_BIN)'" 2>/dev/null | cut -d' ' -f1); \
+		got=$$(awk '/^binary_md5/{print $$2}' "$$m"); \
+		if [ -z "$$want" ]; then \
+			echo "verify: WARN -- could not hash $(REMOTE_BIN) on $(HOST) (ssh failed)." >&2; \
+			echo "        UNKNOWN, not a verdict." >&2; \
+			fresh=0; \
+		elif [ "$$want" != "$$got" ]; then \
+			echo "verify: FAIL -- the manifest on $(HOST) does not describe $(REMOTE_BIN)." >&2; \
+			echo "        manifest says $$got, binary is $$want -- something rebuilt" >&2; \
+			echo "        there without re-installing." >&2; \
+			fail=1; \
+		else \
+			$(foreach d,$(DRIVERS), \
+			  rec=$$(awk '$$1=="driver" && $$2=="$(d)" {print $$3}' "$$m"); \
+			  cur=$$(md5sum "$(abspath $($(d)_SRC))" 2>/dev/null | cut -d' ' -f1); \
+			  if [ -z "$$rec" ]; then \
+			    echo "verify: WARN -- '$(d)' has NO entry in the manifest on $(HOST)." >&2; \
+			    echo "        Absent is not the same as stale: this says nothing about" >&2; \
+			    echo "        which source built it. Re-run install-remote." >&2; \
+			    fresh=0; \
+			  elif [ -z "$$cur" ]; then \
+			    echo "verify: WARN -- cannot hash the local source for '$(d)'; skipped." >&2; \
+			    fresh=0; \
+			  elif [ "$$rec" != "$$cur" ]; then \
+			    echo "verify: FAIL -- '$(d)' on $(HOST) is STALE." >&2; \
+			    echo "        bench built from $$rec" >&2; \
+			    echo "        your source is   $$cur" >&2; \
+			    echo "        The driver IS present there, so a name check passes. The" >&2; \
+			    echo "        bench runs the WRONG VERSION. make install-remote HOST=$(HOST)" >&2; \
+			    fail=1; \
+			  else \
+			    echo "verify: OK   -- '$(d)' on $(HOST) is current ($$cur)"; \
+			  fi; ) \
+		fi; \
+		rm -f "$$m"; \
+	fi; \
+	if [ $$fail -ne 0 ]; then \
+		echo "verify: GATE FAILED -- the bench would run a binary missing or stale driver(s)." >&2; \
+		echo "        Fix it on $(HOST): make install-remote HOST=$(HOST)" >&2; \
+	elif [ "$$fresh" = "0" ]; then \
+		echo "verify: $(HOST):$(REMOTE_BIN) carries: $(DRIVERS) -- freshness NOT established,"; \
+		echo "        so this does NOT say the bench runs your current source."; \
+	else \
+		echo "verify: $(HOST):$(REMOTE_BIN) carries, and is CURRENT for: $(DRIVERS)"; \
 	fi; \
 	exit $$fail
 
@@ -330,8 +427,14 @@ install-remote:
 		echo "install-remote: set HOST=, e.g. 'make install-remote HOST=haps-dev'" >&2; \
 		exit 1; \
 	fi
+	@if ! $(SSH) $(HOST) true 2>/dev/null; then \
+		echo "install-remote: cannot reach $(HOST) over ssh. This is NOT a statement" >&2; \
+		echo "        about what is installed there -- the host is simply unreachable" >&2; \
+		echo "        right now. Retry; a transient reset looks identical to a down host." >&2; \
+		exit 1; \
+	fi
 	@if ! $(SSH) $(HOST) "test -f '$(REMOTE_RECIPE)/Makefile'" 2>/dev/null; then \
-		echo "install-remote: no recipe at $(HOST):$(REMOTE_RECIPE)." >&2; \
+		echo "install-remote: reached $(HOST), but no recipe at $(REMOTE_RECIPE)." >&2; \
 		echo "        Clone this repo there, or pass REMOTE_RECIPE=<path on $(HOST)>." >&2; \
 		exit 1; \
 	fi
