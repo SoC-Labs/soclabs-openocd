@@ -25,7 +25,20 @@ DRIVERS       := ahb_qspi
 # checkout at ../nanosoc-multicore-system -- a different tree, on a different
 # branch, which does NOT carry sw/openocd/. Pointing at that one resolves
 # cleanly and then fails to find the driver, so name the full path explicitly.
-ahb_qspi_ROOT ?= ../nanosoc-ethernet-chiplet/nanosoc-multicore-system/ahb_qspi
+#
+# 2026-09-24: THE DEFAULT IS NOT THAT SUBMODULE. It is a checkout of ahb_qspi
+# branch fix/probe-restores-xip (1e5117e: a failed `flash probe` puts XiP back
+# as it found it). The eth chiplet's submission branch pins the submodule at
+# 07b40f5 and that pin is frozen for tapeout, so the fix cannot reach the
+# submodule path. The checkout is a clone of the branch in the submodule's own
+# repository:
+#   git clone -b fix/probe-restores-xip  <SRC>  ../ahb_qspi-probe-xip
+# where <SRC> is
+#   ../nanosoc-ethernet-chiplet/.git/modules/nanosoc-multicore-system/modules/ahb_qspi
+# (A clone, not `git worktree add`: that repository's common config carries
+# core.worktree, which a linked worktree would inherit.) Once a pin carries
+# 1e5117e, put this back to ../nanosoc-ethernet-chiplet/nanosoc-multicore-system/ahb_qspi.
+ahb_qspi_ROOT ?= ../ahb_qspi-probe-xip
 ahb_qspi_SRC  := $(ahb_qspi_ROOT)/sw/openocd/ahb_qspi.c
 # Where in the OpenOCD tree this driver's .c belongs. NOR flash drivers live in
 # src/flash/nor; ADAPTER drivers live in src/jtag/drivers and additionally touch
@@ -103,7 +116,7 @@ REMOTE_RECIPE ?= /opt/haps-openocd-ahb_qspi/src/soclabs-openocd
 SSH           ?= ssh -o BatchMode=yes
 
 .PHONY: help fetch check-pin patch overlay build verify verify-local verify-remote \
-        install install-remote clean distclean
+        test install install-remote clean distclean
 
 help:
 	@echo "soclabs-openocd -- registered drivers: $(DRIVERS)"
@@ -114,6 +127,7 @@ help:
 	@echo "  make build          configure + build the binary (GATED on verify)"
 	@echo "  make install        install to PREFIX (GATED on verify of the installed binary)"
 	@echo "  make verify         assert every registered driver is embedded"
+	@echo "  make test [BIN=..]  run the drivers' offline tests (no hardware) on a binary"
 	@echo "  make clean          remove build outputs, keep the cloned+patched source"
 	@echo "  make distclean      remove build/ entirely (next fetch starts fresh)"
 	@echo ""
@@ -326,6 +340,19 @@ verify-bin:
 		echo "verify: GATE FAILED -- refusing to call this build good." >&2; \
 	fi; \
 	exit $$fail
+
+# --- test: do the drivers BEHAVE? --------------------------------------------
+# verify asks whether each driver is IN the binary and CURRENT. It cannot tell
+# a working driver from a broken one. test runs hostio4's test_driver_fixes.sh
+# on BIN (default: the build tree's binary): one leg per fixed defect,
+# including ahb_qspi's failed-probe XiP restore, plus the six hardware-proof
+# steps and an 8224-byte load_image. Every far end is SOFTWARE, either
+# HAPS-work's adpmon.py or the misbehaving fake_mon.py. Nothing touches a board,
+# a dongle or a session. Exit status is the number of failed legs.
+#   make test BIN=$(PREFIX)/bin/openocd
+test:
+	@bin="$(if $(strip $(BIN)),$(strip $(BIN)),$(BUILD_DIR)/src/openocd)"; \
+	"$(abspath $(hostio4_ROOT))/test_driver_fixes.sh" "$$bin"
 
 # verify-remote: the same assertion, on the host that will run the binary.
 verify-remote:

@@ -24,7 +24,7 @@ below. The symlink is a build artifact under `build/`, never committed, gone on
 
 | driver     | class   | owning repo                  | path inside it                   | `_DEST`               |
 |------------|---------|------------------------------|----------------------------------|-----------------------|
-| `ahb_qspi` | flash   | `nanosoc-multicore-system`   | `ahb_qspi/sw/openocd/ahb_qspi.c` | `src/flash/nor`       |
+| `ahb_qspi` | flash   | `ahb_qspi` (a submodule of `nanosoc-multicore-system`) | `sw/openocd/ahb_qspi.c` | `src/flash/nor`       |
 | `hostio4`  | adapter | `nanosoc-ethernet-chiplet`   | `scripts/rig/eth_chiplet/openocd_hostio4/hostio4.c` | `src/jtag/drivers` |
 
 ### The default roots, and the trap in the obvious one
@@ -32,8 +32,15 @@ below. The symlink is a build artifact under `build/`, never committed, gone on
 Read the defaults from `../Makefile`, never from here — but the one that bites
 is worth stating twice:
 
-    ahb_qspi_ROOT ?= ../nanosoc-ethernet-chiplet/nanosoc-multicore-system/ahb_qspi
+    ahb_qspi_ROOT ?= ../ahb_qspi-probe-xip
     hostio4_ROOT  ?= ../nanosoc-ethernet-chiplet/scripts/rig/eth_chiplet/openocd_hostio4
+
+**Since 2026-09-24, `ahb_qspi_ROOT` is not the submodule.** It is a clone of
+ahb_qspi branch `fix/probe-restores-xip` (`1e5117e`). The eth chiplet's
+submission branch pins the submodule at `07b40f5`, and that pin is frozen for
+tapeout. The Makefile comment above the default gives the clone command. When a
+pin carries `1e5117e`, the default goes back to
+`../nanosoc-ethernet-chiplet/nanosoc-multicore-system/ahb_qspi`.
 
 **`../nanosoc-multicore-system` is NOT the right root, even though it exists.**
 There is a standalone checkout at that path, on a different branch, which does
