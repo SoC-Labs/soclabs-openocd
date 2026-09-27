@@ -77,6 +77,10 @@ PIN_FILE         := openocd.pin
 PINNED_SHA       := $(strip $(shell sed -n 's/^sha:[[:space:]]*//p' $(PIN_FILE)))
 BUILD_DIR        := build/openocd-src
 PREFIX           ?= $(abspath install)
+# Normalised, because `build` compares it with the prefix the tree was
+# configured for, and configure strips a trailing slash: PREFIX=/x/ would
+# otherwise never match /x, and every build would clean and reconfigure.
+override PREFIX  := $(abspath $(PREFIX))
 CONFIGURE_FLAGS  ?=
 # Pin-matched: v0.12.0 puts the externs in drivers.c, master puts them in
 # driver.h, so the two patches are NOT interchangeable. Keep this in step with
@@ -116,7 +120,7 @@ REMOTE_RECIPE ?= /opt/haps-openocd-ahb_qspi/src/soclabs-openocd
 SSH           ?= ssh -o BatchMode=yes
 
 .PHONY: help fetch check-pin patch overlay build verify verify-local verify-remote \
-        test install install-remote clean distclean
+        test selftest install install-remote clean distclean
 
 help:
 	@echo "soclabs-openocd -- registered drivers: $(DRIVERS)"
@@ -128,6 +132,7 @@ help:
 	@echo "  make install        install to PREFIX (GATED on verify of the installed binary)"
 	@echo "  make verify         assert every registered driver is embedded"
 	@echo "  make test [BIN=..]  run the drivers' offline tests (no hardware) on a binary"
+	@echo "  make selftest       test this Makefile's own install logic (fake upstream, seconds)"
 	@echo "  make clean          remove build outputs, keep the cloned+patched source"
 	@echo "  make distclean      remove build/ entirely (next fetch starts fresh)"
 	@echo ""
@@ -210,7 +215,27 @@ overlay: patch
 # one step earlier. Changing PATCHES therefore forces a re-bootstrap.
 PATCH_STAMP := $(BUILD_DIR)/.soclabs-patch-stamp
 
+# NOTE the prefix check, which runs first. configure runs once per tree, and
+# the prefix it was given is where the sub-make's `install` copies to. Without
+# the check, `make install PREFIX=B` on a tree configured for A installed into
+# A, then wrote B's manifest for whatever binary B already held -- and verify
+# passed, because that binary had the driver names and the manifest now
+# described it. The check reads the prefix from the generated Makefile, the
+# same line the sub-make installs by. On a mismatch it also cleans: OpenOCD
+# and jimtcl compile the prefix into the binary (BINDIR, PKGDATADIR, jim's
+# library path), and reconfiguring alone recompiles none of it. The clean runs
+# before the Makefile goes, so a configure that then fails leaves nothing
+# built for the old prefix behind.
 build: overlay
+	@if [ -f $(BUILD_DIR)/Makefile ]; then \
+		have="$$(sed -n 's/^prefix = //p' $(BUILD_DIR)/Makefile)"; \
+		if [ "$$have" != "$(PREFIX)" ]; then \
+			echo "build: tree is configured for prefix '$$have', not PREFIX=$(PREFIX)"; \
+			echo "build:   cleaning and reconfiguring (the prefix is compiled into the binary)"; \
+			$(MAKE) -C $(BUILD_DIR) clean >/dev/null || exit 1; \
+			rm -f $(BUILD_DIR)/Makefile; \
+		fi; \
+	fi
 	@want="$$(cat $(PATCHES) | md5sum | cut -d' ' -f1)"; \
 	got="$$(cat $(PATCH_STAMP) 2>/dev/null)"; \
 	if [ "$$want" != "$$got" ] && [ -f $(BUILD_DIR)/Makefile ]; then \
@@ -226,7 +251,8 @@ build: overlay
 		echo "build: configuring (PREFIX=$(PREFIX))"; \
 		(cd $(BUILD_DIR) && ./configure --prefix=$(PREFIX) $(CONFIGURE_FLAGS)); \
 	else \
-		echo "build: $(BUILD_DIR)/Makefile already configured -- leaving it (distclean to reconfigure)"; \
+		echo "build: $(BUILD_DIR)/Makefile already configured for $(PREFIX) -- leaving it"; \
+		echo "       (CONFIGURE_FLAGS are NOT re-applied to a configured tree; distclean to change them)"; \
 	fi
 	$(MAKE) -C $(BUILD_DIR)
 	@echo "build: binary at $(BUILD_DIR)/src/openocd"
@@ -242,13 +268,26 @@ build: overlay
 MANIFEST_DIR  = $(PREFIX)/share/soclabs-openocd
 MANIFEST      = $(MANIFEST_DIR)/build.manifest
 
+# The cmp is the second half of the prefix fix, and it does not depend on the
+# first. Whatever the sub-make did, the manifest may only be written for a
+# file that IS the binary just built. So it is checked against the build tree
+# before anything is written, and the md5 is taken from the build tree. A
+# bindir or exec_prefix in CONFIGURE_FLAGS sends the binary somewhere other
+# than $(PREFIX)/bin with the prefix check satisfied; this refuses that too.
 install: build
 	$(MAKE) -C $(BUILD_DIR) install
+	@if ! cmp -s "$(BUILD_DIR)/src/openocd" "$(PREFIX)/bin/openocd"; then \
+		echo "install: FAILED -- $(PREFIX)/bin/openocd is not the binary just built" >&2; \
+		echo "         ($(BUILD_DIR)/src/openocd). The sub-make installed somewhere else:" >&2; \
+		echo "         check CONFIGURE_FLAGS for --bindir or --exec-prefix." >&2; \
+		echo "         No manifest written: it would vouch for whatever file is there." >&2; \
+		exit 1; \
+	fi
 	@mkdir -p "$(MANIFEST_DIR)"
 	@{ echo "# soclabs-openocd build manifest -- written by 'make install'."; \
 	   echo "# 'make verify' compares these against the live binary and the"; \
 	   echo "# CURRENT driver sources. A mismatch means the binary is stale."; \
-	   echo "binary_md5 $$(md5sum '$(PREFIX)/bin/openocd' | cut -d' ' -f1)"; \
+	   echo "binary_md5 $$(md5sum '$(BUILD_DIR)/src/openocd' | cut -d' ' -f1)"; \
 	   $(foreach d,$(DRIVERS),echo "driver $(d) $$(md5sum '$(abspath $($(d)_SRC))' | cut -d' ' -f1)";) \
 	 } > "$(MANIFEST)"
 	@echo "install: manifest at $(MANIFEST)"
@@ -353,6 +392,17 @@ verify-bin:
 test:
 	@bin="$(if $(strip $(BIN)),$(strip $(BIN)),$(BUILD_DIR)/src/openocd)"; \
 	"$(abspath $(hostio4_ROOT))/test_driver_fixes.sh" "$$bin"
+
+# --- selftest: does THIS MAKEFILE install what it built? ----------------------
+# test asks whether the drivers behave; selftest asks whether the recipe's own
+# build/install logic tells the truth. It runs this Makefile's build, install
+# and verify against a fake upstream (a configure that writes an automake-style
+# "prefix = " line, and an install rule that copies to $(bindir)), so it needs
+# no network and no compiler. It then runs the same legs on mutants of this
+# Makefile, with each guard removed, and on the pre-fix Makefile. Every mutant
+# must fail. Exit status is non-zero if a leg fails or a mutant survives.
+selftest:
+	@"$(CURDIR)/tests/selftest-install.sh" --makefile "$(CURDIR)/Makefile"
 
 # verify-remote: the same assertion, on the host that will run the binary.
 verify-remote:
