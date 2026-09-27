@@ -132,9 +132,14 @@ help:
 	@echo "  make install        install to PREFIX (GATED on verify of the installed binary)"
 	@echo "  make verify         assert every registered driver is embedded"
 	@echo "  make test [BIN=..]  run the drivers' offline tests (no hardware) on a binary"
-	@echo "  make selftest       test this Makefile's own install logic (fake upstream, seconds)"
+	@echo "  make selftest       test this Makefile's own install and site logic (fake upstream, ~1 min)"
 	@echo "  make clean          remove build outputs, keep the cloned+patched source"
 	@echo "  make distclean      remove build/ entirely (next fetch starts fresh)"
+	@echo ""
+	@echo "  make install-site   build+install+verify+test into $(SITE_ROOT)/$(SITE_VER)"
+	@echo "  make site-publish   atomically point $(SITE_ROOT)/install at it (old one -> previous)"
+	@echo "  make site-rollback  atomically point install back at previous"
+	@echo "  make site-status    where install and previous point, and the versions there"
 	@echo ""
 	@echo "  make install-remote HOST=haps-dev   build+install+verify ON the bench host"
 	@echo "  make verify         HOST=haps-dev   assert the drivers in $(REMOTE_BIN) there"
@@ -395,12 +400,16 @@ test:
 
 # --- selftest: does THIS MAKEFILE install what it built? ----------------------
 # test asks whether the drivers behave; selftest asks whether the recipe's own
-# build/install logic tells the truth. It runs this Makefile's build, install
-# and verify against a fake upstream (a configure that writes an automake-style
+# logic tells the truth: install puts the binary it built into PREFIX, and the
+# site targets build a new version without touching the live one, flip the
+# link by rename, roll back, and refuse what they should. It runs this
+# Makefile against a fake upstream (a configure that writes an automake-style
 # "prefix = " line, and an install rule that copies to $(bindir)), so it needs
-# no network and no compiler. It then runs the same legs on mutants of this
-# Makefile, with each guard removed, and on the pre-fix Makefile. Every mutant
-# must fail. Exit status is non-zero if a leg fails or a mutant survives.
+# no network, no compiler and no HAPS-work. It then runs the legs on mutants
+# of this Makefile, one guard removed each, and on the pre-fix Makefile. Every
+# mutant must fail on its own leg. Exit status is non-zero if a leg fails or a
+# mutant survives. About a minute; tests/selftest-install.sh --help lists the
+# legs and mutants.
 selftest:
 	@"$(CURDIR)/tests/selftest-install.sh" --makefile "$(CURDIR)/Makefile"
 
@@ -534,6 +543,151 @@ install-remote:
 	@echo "install-remote: building on $(HOST) in $(REMOTE_RECIPE) (PREFIX=$(REMOTE_PREFIX))"
 	$(SSH) $(HOST) "cd '$(REMOTE_RECIPE)' && $(MAKE) install PREFIX='$(REMOTE_PREFIX)' $(REMOTE_SRC_OVERRIDES)"
 	@$(MAKE) --no-print-directory verify-remote HOST="$(strip $(HOST))"
+
+# --- site install: versioned prefixes behind one `install` symlink -----------
+# The shared install every bench user gets with no variable set. The contract
+# is ONE path: haps-openocd's LBIN_SITE is $(SITE_ROOT)/install/bin/openocd,
+# and modulefile/1.0 looks in $(SITE_ROOT)/install. What that path resolves
+# to changes only by renaming a symlink over it, which is atomic: a new
+# session gets the old binary or the new one, never neither. A session
+# already running keeps the inode it started with.
+#
+#   make install-site   build, install, verify and test into $(SITE_ROOT)/$(SITE_VER).
+#                       A NEW prefix: nothing any user runs changes.
+#   make site-publish   point install at $(SITE_VER); the old target becomes `previous`
+#   make site-rollback  point install at `previous` (run it again to roll forward)
+#   make site-status    where install and previous point, and every version there
+#
+# SITE_VER names the recipe commit, so install-site refuses a recipe tree with
+# uncommitted changes, and a driver source that is not a committed, unmodified
+# file in a git checkout: an edit would otherwise ship to every user under a
+# name that does not describe it. A version that is live is never rebuilt in
+# place. The first publish has no `previous`; undoing it is removing the
+# install link, which puts every user back on their own rung (haps-openocd
+# falls through to the per-user build).
+SITE_ROOT   ?= /research/CAD/soclabs-openocd
+OPENOCD_VER ?= $(or $(shell sed -n 's/.*\[tag: v\([0-9][0-9.]*\)\].*/\1/p' $(PIN_FILE)),g$(shell printf %.7s '$(PINNED_SHA)'))
+RECIPE_SHA  := $(shell git -C '$(CURDIR)' rev-parse --verify -q HEAD 2>/dev/null)
+SITE_VER    ?= $(OPENOCD_VER)-soclabs-$(shell printf %.7s '$(RECIPE_SHA)')
+SITE_PREFIX  = $(SITE_ROOT)/$(SITE_VER)
+SITE_LINK    = $(SITE_ROOT)/install
+SITE_PREV    = $(SITE_ROOT)/previous
+
+.PHONY: install-site site-publish site-rollback site-status
+
+install-site:
+	@if [ -z "$(RECIPE_SHA)" ]; then \
+		echo "install-site: FAILED -- $(CURDIR) is not a git checkout; $(SITE_VER) needs a commit to name." >&2; \
+		exit 1; \
+	fi
+	@dirty=$$(git -C '$(CURDIR)' status --porcelain --untracked-files=no); \
+	if [ -n "$$dirty" ]; then \
+		echo "install-site: FAILED -- the recipe tree has uncommitted changes:" >&2; \
+		echo "$$dirty" | sed 's/^/          /' >&2; \
+		echo "        $(SITE_VER) would name $(RECIPE_SHA) and not describe what was built." >&2; \
+		exit 1; \
+	fi
+	@$(foreach d,$(DRIVERS), \
+		src=$$(readlink -f "$($(d)_SRC)"); dir=$$(dirname "$$src"); \
+		if ! git -C "$$dir" ls-files --error-unmatch -- "$$src" >/dev/null 2>&1; then \
+			echo "install-site: FAILED -- $(d): '$($(d)_SRC)' is not a tracked file in a git checkout." >&2; \
+			exit 1; \
+		fi; \
+		if ! git -C "$$dir" diff --quiet HEAD -- "$$src"; then \
+			echo "install-site: FAILED -- $(d): '$$src' has uncommitted changes." >&2; \
+			exit 1; \
+		fi; \
+		echo "install-site: $(d) = $$(git -C "$$dir" rev-parse --short=7 HEAD) of $$(git -C "$$dir" config --get remote.origin.url || echo '(no origin)'), md5 $$(md5sum "$$src" | cut -d' ' -f1)"; \
+	)
+	@if [ "$$(readlink '$(SITE_LINK)' 2>/dev/null)" = "$(SITE_VER)" ]; then \
+		echo "install-site: FAILED -- $(SITE_VER) is LIVE: $(SITE_LINK) points at it." >&2; \
+		echo "        A live prefix is never rebuilt in place. Commit the change; the new" >&2; \
+		echo "        commit names a new prefix." >&2; \
+		exit 1; \
+	fi
+	@mkdir -p '$(SITE_ROOT)'
+	@echo "install-site: building $(SITE_VER) into $(SITE_PREFIX)"
+	$(MAKE) --no-print-directory install PREFIX='$(SITE_PREFIX)'
+	@chmod -R u=rwX,go=rX '$(SITE_PREFIX)'
+	$(MAKE) --no-print-directory test BIN='$(SITE_PREFIX)/bin/openocd'
+	@echo "install-site: $(SITE_PREFIX) is built, verified and tested. Nothing live has changed."
+	@echo "install-site: publish it with:  make site-publish SITE_ROOT=$(SITE_ROOT)"
+
+# Atomic: the new link is made beside the old one and renamed over it
+# (mv -T is rename(2)). Not `ln -sfn`: EL8's coreutils 8.30 happens to rename
+# a temporary link over too (strace shows it), but POSIX does not require
+# that, and an ln that unlinks first leaves a window where a starting session
+# finds no binary. The explicit rename does not depend on which ln is on PATH.
+# The target is the bare version name, so the tree stays valid if SITE_ROOT
+# is ever moved or mounted elsewhere.
+site-publish:
+	@if [ -e '$(SITE_LINK)' ] && [ ! -L '$(SITE_LINK)' ]; then \
+		echo "site-publish: FAILED -- $(SITE_LINK) exists and is not a symlink. Move it aside by hand." >&2; \
+		exit 1; \
+	fi
+	@$(MAKE) --no-print-directory verify-bin BIN='$(SITE_PREFIX)/bin/openocd'
+	@cur=$$(readlink '$(SITE_LINK)' 2>/dev/null); \
+	if [ "$$cur" = "$(SITE_VER)" ]; then \
+		echo "site-publish: $(SITE_VER) is already live -- nothing to do"; exit 0; \
+	fi; \
+	tmp='$(SITE_ROOT)/.install.new.'$$$$; \
+	if ! { ln -s '$(SITE_VER)' "$$tmp" && mv -T "$$tmp" '$(SITE_LINK)'; }; then \
+		rm -f "$$tmp"; echo "site-publish: FAILED to flip $(SITE_LINK)" >&2; exit 1; \
+	fi; \
+	echo "site-publish: $(SITE_LINK) -> $(SITE_VER)   (was: $${cur:-nothing})"; \
+	if [ -n "$$cur" ]; then \
+		tmp='$(SITE_ROOT)/.previous.new.'$$$$; \
+		ln -s "$$cur" "$$tmp" && mv -T "$$tmp" '$(SITE_PREV)' || { rm -f "$$tmp"; exit 1; }; \
+		echo "site-publish: $(SITE_PREV) -> $$cur   (undo: make site-rollback SITE_ROOT=$(SITE_ROOT))"; \
+	else \
+		echo "site-publish: first publish, so no previous. Undo: rm $(SITE_LINK)"; \
+	fi
+	@$(MAKE) --no-print-directory verify-bin BIN='$(SITE_LINK)/bin/openocd'
+
+# Rollback checks the target's integrity (its manifest describes its binary),
+# not its freshness: verify-bin would call an older version STALE against this
+# checkout's driver sources, which is the point of rolling back to it.
+site-rollback:
+	@if [ -e '$(SITE_LINK)' ] && [ ! -L '$(SITE_LINK)' ]; then \
+		echo "site-rollback: FAILED -- $(SITE_LINK) exists and is not a symlink." >&2; exit 1; \
+	fi
+	@prev=$$(readlink '$(SITE_PREV)' 2>/dev/null); cur=$$(readlink '$(SITE_LINK)' 2>/dev/null); \
+	if [ -z "$$prev" ]; then \
+		echo "site-rollback: FAILED -- no $(SITE_PREV) link, so nothing to roll back to." >&2; \
+		echo "        After a FIRST publish, undo is: rm $(SITE_LINK)" >&2; \
+		exit 1; \
+	fi; \
+	case "$$prev" in /*) d=$$prev ;; *) d='$(SITE_ROOT)'/$$prev ;; esac; \
+	if [ ! -x "$$d/bin/openocd" ]; then \
+		echo "site-rollback: FAILED -- $$d/bin/openocd is not executable." >&2; exit 1; \
+	fi; \
+	if [ "$$(md5sum < "$$d/bin/openocd" | cut -d' ' -f1)" != "$$(awk '/^binary_md5/{print $$2}' "$$d/share/soclabs-openocd/build.manifest" 2>/dev/null)" ]; then \
+		echo "site-rollback: FAILED -- $$prev's manifest does not describe its binary." >&2; exit 1; \
+	fi; \
+	tmp='$(SITE_ROOT)/.install.new.'$$$$; \
+	if ! { ln -s "$$prev" "$$tmp" && mv -T "$$tmp" '$(SITE_LINK)'; }; then \
+		rm -f "$$tmp"; echo "site-rollback: FAILED to flip $(SITE_LINK)" >&2; exit 1; \
+	fi; \
+	echo "site-rollback: $(SITE_LINK) -> $$prev   (was: $${cur:-nothing})"; \
+	if [ -n "$$cur" ]; then \
+		tmp='$(SITE_ROOT)/.previous.new.'$$$$; \
+		ln -s "$$cur" "$$tmp" && mv -T "$$tmp" '$(SITE_PREV)' || { rm -f "$$tmp"; exit 1; }; \
+		echo "site-rollback: $(SITE_PREV) -> $$cur   (run site-rollback again to roll forward)"; \
+	fi
+
+site-status:
+	@echo "site-status: $(SITE_ROOT)"
+	@echo "  install  -> $$(readlink '$(SITE_LINK)' 2>/dev/null || echo '(none)')"
+	@echo "  previous -> $$(readlink '$(SITE_PREV)' 2>/dev/null || echo '(none)')"
+	@echo "  this checkout builds: $(SITE_VER)"
+	@for d in '$(SITE_ROOT)'/*/; do \
+		d=$${d%/}; [ -d "$$d" ] && [ ! -L "$$d" ] || continue; \
+		b="$$d/bin/openocd"; m="$$d/share/soclabs-openocd/build.manifest"; \
+		if [ ! -x "$$b" ]; then s="NO BINARY"; \
+		elif [ "$$(md5sum < "$$b" | cut -d' ' -f1)" = "$$(awk '/^binary_md5/{print $$2}' "$$m" 2>/dev/null)" ]; then s="manifest matches"; \
+		else s="MANIFEST DOES NOT DESCRIBE THE BINARY"; fi; \
+		echo "  version  $$(basename "$$d"): $$s"; \
+	done
 
 # --- clean / distclean -------------------------------------------------------
 clean:
