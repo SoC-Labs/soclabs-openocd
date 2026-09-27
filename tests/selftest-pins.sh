@@ -25,11 +25,17 @@
 #       FAILS again. Its remote-tracking refs still hold the pin; only a
 #       fresh fetch can tell.
 #   P6  a submodule checked out at a commit other than its pin: FAILS.
+#   P7  the submodule's origin is a fork whose master holds the pin, while the
+#       .gitmodules URL has it only on a side branch: FAILS. A fresh clone
+#       asks the .gitmodules URL, so check-pins must too.
 #
 # Mutants, each must fail its leg:
 #   M-noancestor  check-pins: is-ancestor always true     -> P2
 #   M-nofetch     check-pins: no fetch, stale refs        -> P5
 #   M-nohead      check-pins: checkout-is-pin removed     -> P6
+#   M-origin      check-pins: fetches origin, not the URL -> P7
+#   M-noprune     check-pins: fetch without --prune       -> P5 (a deleted
+#                 branch still "holds" the pin, so the verdict is misnamed)
 #   M-sitenopins  Makefile: install-site skips check-pins -> P2s
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -140,8 +146,8 @@ run_legs() {  # run_legs NAME SCRIPT MAKEFILE: the legs, with that script and Ma
   c=$W/c2; fresh "$c"
   mk "$c" sources; rc=$?; why=
   if [ $rc -ne 0 ]; then why="sources could not clone a pin that IS on the remote (rc $rc): $(tell)"
-  elif mk "$c" check-pins; then why="check-pins PASSED a pin that is not on origin/master"
-  elif ! grep -q "NOT on origin/master.*origin/fix" "$LOG"; then why="failed, but did not name the side branch: $(tell)"
+  elif mk "$c" check-pins; then why="check-pins PASSED a pin that is not on master"
+  elif ! grep -q "NOT on 'master'.*branch 'fix'" "$LOG"; then why="failed, but did not name the side branch: $(tell)"
   fi
   leg P2 "$why"
 
@@ -179,7 +185,7 @@ run_legs() {  # run_legs NAME SCRIPT MAKEFILE: the legs, with that script and Ma
   newlog P4
   q git -C "$W/work/A" merge -q --ff-only fix
   q git -C "$W/work/A" push -q origin master
-  if ! mk "$W/c2" check-pins; then why="the pin is on origin/master now, but check-pins failed: $(tell)"; else why=; fi
+  if ! mk "$W/c2" check-pins; then why="the pin is on master now, but check-pins failed: $(tell)"; else why=; fi
   leg P4 "$why"
 
   # P5: master force-pushed back and fix deleted: the pin is on no branch.
@@ -202,6 +208,24 @@ run_legs() {  # run_legs NAME SCRIPT MAKEFILE: the legs, with that script and Ma
   elif ! grep -q "checked out .* but the recipe pins" "$LOG"; then why="failed, but not for the checkout: $(tell)"
   else why=; fi
   leg P6 "$why"
+
+  # P7: A's origin in this clone is a FORK whose master holds a pin the real
+  # remote (the .gitmodules URL) has only on a side branch
+  newlog P7
+  reset_fixture
+  git -C "$W/work/A" checkout -q -b fix
+  side=$(wcommit A "A fix")
+  q git -C "$W/work/A" push -q origin fix
+  git -C "$W/work/A" checkout -q master
+  rm -rf "$W/remote/A-fork.git"; q git clone -q --bare "$W/remote/A.git" "$W/remote/A-fork.git"
+  q git -C "$W/remote/A-fork.git" update-ref refs/heads/master "$side"
+  pin A "$side" "pin A at its fix branch"
+  c=$W/c7; fresh "$c"; mk "$c" sources
+  q git -C "$c/drivers/A" remote set-url origin "file://$W/remote/A-fork.git"
+  if mk "$c" check-pins; then why="PASSED because the checkout's origin (a fork) has the pin on master; a fresh clone uses the .gitmodules URL"
+  elif ! grep -q "NOT on 'master' of file://$W/remote/A.git" "$LOG"; then why="failed, but not against the .gitmodules URL: $(tell)"
+  else why=; fi
+  leg P7 "$why"
 }
 
 BAD=0
@@ -231,10 +255,14 @@ if [ "$MUTANTS" = 1 ]; then
       *) if [ -z "$FAILED" ]; then echo "  SURVIVED: every leg passed"; else echo "  caught by$FAILED, but NOT by $2"; fi; BAD=$((BAD+1)) ;;
     esac
   }
-  once "$W/check-pins.M-noancestor" 'if ! git -C "$path" merge-base --is-ancestor "$pin" "refs/remotes/origin/$br"; then' 'if false; then'
+  once "$W/check-pins.M-noancestor" 'if ! git -C "$path" merge-base --is-ancestor "$pin" "$NS/$br"; then' 'if false; then'
   mutant M-noancestor P2
-  once "$W/check-pins.M-nofetch" "if ! git -C \"\$path\" fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*'; then" 'if false; then'
+  once "$W/check-pins.M-nofetch" 'if ! git -C "$path" fetch -q --prune "$url" "+refs/heads/*:$NS/*"; then' 'if false; then'
   mutant M-nofetch P5
+  once "$W/check-pins.M-origin" 'if ! git -C "$path" fetch -q --prune "$url" "+refs/heads/*:$NS/*"; then' 'if ! git -C "$path" fetch -q --prune origin "+refs/heads/*:$NS/*"; then'
+  mutant M-origin P7
+  once "$W/check-pins.M-noprune" 'if ! git -C "$path" fetch -q --prune "$url" "+refs/heads/*:$NS/*"; then' 'if ! git -C "$path" fetch -q "$url" "+refs/heads/*:$NS/*"; then'
+  mutant M-noprune P5
   once "$W/check-pins.M-nohead" 'if [ "$head" != "$pin" ]; then' 'if false; then'
   mutant M-nohead P6
   once "$W/Makefile.M-sitenopins" '$(MAKE) --no-print-directory check-pins || { \' 'true || { \' "$MK"

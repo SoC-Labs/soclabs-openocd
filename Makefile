@@ -167,12 +167,13 @@ check-pin:
 # developer made on purpose.
 #
 # check-pins asks the question a fresh clone will ask: is each pin on the
-# branch .gitmodules names, on the remote, NOW? A pin that exists only in
-# this checkout clones here and nowhere else. A pin held only by a side
-# branch clones until that branch is deleted. It fetches every branch first
-# (--prune), so a stale remote-tracking ref cannot vouch for a pin that a
-# force-push has since removed. It also fails when a submodule's checkout is
-# not its pin, because that is not what the recipe commit describes.
+# branch .gitmodules names, at the URL .gitmodules names, NOW? A pin that
+# exists only in this checkout clones here and nowhere else. A pin held only
+# by a side branch clones until that branch is deleted. It fetches every
+# branch from that URL (--prune, into its own ref namespace), so neither a
+# stale ref nor a submodule origin pointing at a fork can vouch for a pin. It
+# also fails when a submodule's checkout is not its pin, because that is not
+# what the recipe commit describes.
 SUBMODULES := $(shell git config -f .gitmodules --get-regexp '^submodule\..*\.path$$' 2>/dev/null | awk '{print $$2}')
 
 sources:
