@@ -132,6 +132,17 @@ Do not read the row above as hardware evidence; only the `ahb_qspi` row is.
 
 ## The four build steps
 
+The driver sources are submodules (`drivers/`, see `drivers/README.md`), so
+check them out first. The command does not recurse, and cloning with
+`--recurse-submodules` is never right:
+
+```
+make sources      # each driver repo at the commit this recipe pins
+make check-pins   # each pin is on its branch on the remote: it will clone for anyone
+```
+
+Then:
+
 ```
 make fetch     # clone upstream, check out the commit openocd.pin names
 make patch     # apply patches/*.patch (idempotent: skips if already applied)
@@ -220,6 +231,34 @@ silently from then on. Re-staging on every install makes the host copy a cache
 of the owning repo rather than a second source of truth. A consequence worth
 knowing: the host needs no checkout of the superproject the drivers live in.
 
+## The site install every bench user runs
+
+Decision D3 (27 Sep) puts it at `/research/CAD/soclabs-openocd/`. There is one
+prefix per recipe commit, `0.12.0-soclabs-<recipe7>/`, and a symlink
+`install -> <current>`. `haps-openocd` (`LBIN_SITE`) and `modulefile/1.0` both
+name `/research/CAD/soclabs-openocd/install`, so the link is the whole
+contract. Run it from a clean clone of the commit you mean to ship:
+
+    git clone -b <branch> https://github.com/SoC-Labs/soclabs-openocd.git
+    cd soclabs-openocd
+    make sources check-pins
+    make -j8 install-site      # new prefix: build, install, verify, make test
+    make site-publish          # install -> it, atomically; the old one -> previous
+    make verify BIN=/research/CAD/soclabs-openocd/install/bin/openocd
+    make site-status
+
+`make site-rollback` points `install` back at `previous`, and running it again
+rolls forward. The first publish has no `previous`, so undo it with
+`rm /research/CAD/soclabs-openocd/install`, which returns every user to their
+own rung. The link is flipped by `rename(2)`, so a session that is starting
+sees the old binary or the new one, never neither. A session that is already
+running keeps its inode.
+
+`install-site` refuses a dirty recipe tree, a pin that fails `check-pins`, a
+driver source with uncommitted edits, and a version that is already live. It
+publishes nothing. `make selftest` proves each of those refusals, and the
+flip, with a mutant for each.
+
 ## Layout
 
 ```
@@ -233,10 +272,19 @@ soclabs-openocd/
     hostio4-single-source-guard.patch      NOT in PATCHES: belongs upstream,
                                             already applied there; kept as the
                                             record of that change
+  .gitmodules             the driver submodules, and the branch each pin must be on
   drivers/
-    README.md            where each driver's .c actually lives, and how
-                          to register a second one
-  Makefile                fetch / patch / overlay / build / verify / clean
+    README.md            which repo owns each driver, its pin, and how to
+                          register a second one
+    ahb_qspi/            submodule: git.soton.ac.uk/soclabs/ahb_qspi
+    nanosoc-ethernet-chiplet/  submodule: the chiplet (hostio4.c); never recursed
+  scripts/
+    check-pins.sh        does every pin clone for anyone? (make check-pins)
+  tests/
+    selftest-install.sh  install/site logic against a fake upstream, with mutants
+    selftest-pins.sh     sources/check-pins against fake remotes, with mutants
+  Makefile                sources / fetch / patch / overlay / build / verify /
+                          install / install-site / site-publish / site-rollback
   modulefile/
     1.0                   Environment Modules file: prepends the built
                           bin/ to PATH for users who load it, touches

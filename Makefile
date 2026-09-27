@@ -15,30 +15,29 @@
 # Driver registry. Adding a SECOND driver is these two lines:
 #
 #   DRIVERS  += foo
-#   foo_ROOT ?= ../path/to/foo-owning-repo
+#   foo_ROOT ?= drivers/<submodule of the repo that owns foo.c>
 #
-# (then add patches/000N-register-foo.patch -- see drivers/README.md)
+# (then add the submodule, and patches/000N-register-foo.patch -- see
+# drivers/README.md)
+#
+# The default roots are SUBMODULES of this recipe (.gitmodules), checked out by
+# `make sources` at the commit the recipe pins, and `make check-pins` proves
+# each pin is on its branch on the remote. So a recipe commit names the driver
+# sources exactly, and a fresh clone builds the same thing on any machine.
+# Until 2026-09-27 the roots were sibling checkouts (../ahb_qspi-probe-xip,
+# ../nanosoc-ethernet-chiplet/...): whatever those held got built, uncommitted
+# edits included, and the ahb_qspi one was a clone whose origin was a path
+# inside the chiplet's .git. Pointing a root at a working checkout is still
+# the way to build a driver you are editing:
+#   make build hostio4_ROOT=../nanosoc-ethernet-chiplet/scripts/rig/eth_chiplet/openocd_hostio4
 # ---------------------------------------------------------------------------
 DRIVERS       := ahb_qspi
-# NOTE the path: ahb_qspi is a submodule of nanosoc-multicore-system, which is
-# itself a submodule of nanosoc-ethernet-chiplet. There is ALSO a standalone
-# checkout at ../nanosoc-multicore-system -- a different tree, on a different
-# branch, which does NOT carry sw/openocd/. Pointing at that one resolves
-# cleanly and then fails to find the driver, so name the full path explicitly.
-#
-# 2026-09-24: THE DEFAULT IS NOT THAT SUBMODULE. It is a checkout of ahb_qspi
-# branch fix/probe-restores-xip (1e5117e: a failed `flash probe` puts XiP back
-# as it found it). The eth chiplet's submission branch pins the submodule at
-# 07b40f5 and that pin is frozen for tapeout, so the fix cannot reach the
-# submodule path. The checkout is a clone of the branch in the submodule's own
-# repository:
-#   git clone -b fix/probe-restores-xip  <SRC>  ../ahb_qspi-probe-xip
-# where <SRC> is
-#   ../nanosoc-ethernet-chiplet/.git/modules/nanosoc-multicore-system/modules/ahb_qspi
-# (A clone, not `git worktree add`: that repository's common config carries
-# core.worktree, which a linked worktree would inherit.) Once a pin carries
-# 1e5117e, put this back to ../nanosoc-ethernet-chiplet/nanosoc-multicore-system/ahb_qspi.
-ahb_qspi_ROOT ?= ../ahb_qspi-probe-xip
+# ahb_qspi's own repository, pinned at 1e5117e: its fix/probe-restores-xip tip
+# (a failed `flash probe` puts XiP back as it found it) and, once pushed, the
+# tip of its master (decision D5, 27 Sep: a fast-forward). The eth chiplet's
+# frozen tapeout pin (07b40f5, via nanosoc-multicore-system) is older and does
+# not move; this recipe no longer builds from the chiplet's copy.
+ahb_qspi_ROOT ?= drivers/ahb_qspi
 ahb_qspi_SRC  := $(ahb_qspi_ROOT)/sw/openocd/ahb_qspi.c
 # Where in the OpenOCD tree this driver's .c belongs. NOR flash drivers live in
 # src/flash/nor; ADAPTER drivers live in src/jtag/drivers and additionally touch
@@ -63,8 +62,11 @@ ahb_qspi_DEST := src/flash/nor
 # Re-verified against the canonical file on the day it was enabled:
 # gcc -fsyntax-only rc=0 at BOTH v0.12.0 and master, with the preprocessor
 # taking a different branch at each. No hostio4_SRC= override is needed.
+# Its home is the chiplet repo (decision D6, 27 Sep), pinned at 057d317 on
+# feat/padring-boundary-scan. The submodule is the chiplet superproject only
+# (~17 MiB checked out): `make sources` never recurses into its submodules.
 DRIVERS       += hostio4
-hostio4_ROOT  ?= ../nanosoc-ethernet-chiplet/scripts/rig/eth_chiplet/openocd_hostio4
+hostio4_ROOT  ?= drivers/nanosoc-ethernet-chiplet/scripts/rig/eth_chiplet/openocd_hostio4
 hostio4_SRC   := $(hostio4_ROOT)/hostio4.c
 hostio4_DEST  := src/jtag/drivers
 
@@ -119,12 +121,14 @@ REMOTE_BIN    ?= $(REMOTE_PREFIX)/bin/openocd
 REMOTE_RECIPE ?= /opt/haps-openocd-ahb_qspi/src/soclabs-openocd
 SSH           ?= ssh -o BatchMode=yes
 
-.PHONY: help fetch check-pin patch overlay build verify verify-local verify-remote \
-        test selftest install install-remote clean distclean
+.PHONY: help sources check-pins fetch check-pin patch overlay build verify verify-local \
+        verify-remote test selftest install install-remote clean distclean
 
 help:
 	@echo "soclabs-openocd -- registered drivers: $(DRIVERS)"
 	@echo ""
+	@echo "  make sources        check out the driver submodules at their pins (never recursive)"
+	@echo "  make check-pins     prove each driver pin is on its .gitmodules branch, on the remote"
 	@echo "  make fetch          clone upstream (if not already) and check out the pin"
 	@echo "  make patch          apply patches/*.patch (idempotent)"
 	@echo "  make overlay        symlink each driver's .c in from its owning repo"
@@ -132,7 +136,7 @@ help:
 	@echo "  make install        install to PREFIX (GATED on verify of the installed binary)"
 	@echo "  make verify         assert every registered driver is embedded"
 	@echo "  make test [BIN=..]  run the drivers' offline tests (no hardware) on a binary"
-	@echo "  make selftest       test this Makefile's own install and site logic (fake upstream, ~1 min)"
+	@echo "  make selftest       test this recipe's install, site and pin logic (all fakes, ~70 s)"
 	@echo "  make clean          remove build outputs, keep the cloned+patched source"
 	@echo "  make distclean      remove build/ entirely (next fetch starts fresh)"
 	@echo ""
@@ -153,6 +157,39 @@ check-pin:
 		exit 1; \
 	fi
 	@echo "check-pin: pin is $(PINNED_SHA) (from $(PIN_FILE))"
+
+# --- sources / check-pins: the driver submodules ------------------------------
+# sources checks out every submodule in .gitmodules at the commit this recipe
+# pins. NOT recursive, on purpose: nanosoc-ethernet-chiplet's own submodules
+# are vendor and tapeout trees the recipe never reads, and some need
+# credentials. It is also never run implicitly: `git submodule update` moves a
+# submodule back to its pin, which would silently undo a checkout a driver
+# developer made on purpose.
+#
+# check-pins asks the question a fresh clone will ask: is each pin on the
+# branch .gitmodules names, on the remote, NOW? A pin that exists only in
+# this checkout clones here and nowhere else. A pin held only by a side
+# branch clones until that branch is deleted. It fetches every branch first
+# (--prune), so a stale remote-tracking ref cannot vouch for a pin that a
+# force-push has since removed. It also fails when a submodule's checkout is
+# not its pin, because that is not what the recipe commit describes.
+SUBMODULES := $(shell git config -f .gitmodules --get-regexp '^submodule\..*\.path$$' 2>/dev/null | awk '{print $$2}')
+
+sources:
+	@if [ -z "$(strip $(SUBMODULES))" ]; then \
+		echo "sources: FAILED -- no submodules in .gitmodules" >&2; exit 1; \
+	fi
+	@if ! git -c submodule.recurse=false submodule update --init -- $(SUBMODULES); then \
+		echo "sources: FAILED -- a submodule did not check out at its pin." >&2; \
+		echo "        If git said the commit was not in what it fetched, that PIN WILL NOT" >&2; \
+		echo "        CLONE: it was never pushed, or its branch was rewritten. Run" >&2; \
+		echo "        'make check-pins' in a checkout that has the commit to see which." >&2; \
+		exit 1; \
+	fi
+	@git submodule status -- $(SUBMODULES)
+
+check-pins:
+	@"$(CURDIR)/scripts/check-pins.sh"
 
 # --- fetch: clone once, then always re-assert the pin ----------------------
 fetch: check-pin
@@ -193,7 +230,8 @@ overlay: patch
 	@$(foreach d,$(DRIVERS), \
 		if [ ! -f "$($(d)_SRC)" ]; then \
 			echo "overlay: FAILED -- $(d): '$($(d)_SRC)' not found." >&2; \
-			echo "          Set $(d)_ROOT= to the checkout that owns it, e.g.:" >&2; \
+			echo "          If that is a submodule path, run 'make sources' first." >&2; \
+			echo "          Otherwise set $(d)_ROOT= to the checkout that owns it:" >&2; \
 			echo "            make overlay $(d)_ROOT=/path/to/it" >&2; \
 			exit 1; \
 		fi; \
@@ -410,8 +448,16 @@ test:
 # mutant must fail on its own leg. Exit status is non-zero if a leg fails or a
 # mutant survives. About a minute; tests/selftest-install.sh --help lists the
 # legs and mutants.
+#
+# The second half, selftest-pins.sh, does the same for sources and check-pins:
+# fake driver remotes, fresh clones, a pin on a side branch, an unpushed pin,
+# the side branch merged, a force-push that removes the pin, and a submodule
+# checked out away from its pin. About 15 s.
 selftest:
-	@"$(CURDIR)/tests/selftest-install.sh" --makefile "$(CURDIR)/Makefile"
+	@rc=0; \
+	"$(CURDIR)/tests/selftest-install.sh" --makefile "$(CURDIR)/Makefile" || rc=1; \
+	"$(CURDIR)/tests/selftest-pins.sh" --makefile "$(CURDIR)/Makefile" --script "$(CURDIR)/scripts/check-pins.sh" || rc=1; \
+	exit $$rc
 
 # verify-remote: the same assertion, on the host that will run the binary.
 verify-remote:
@@ -559,9 +605,10 @@ install-remote:
 #   make site-status    where install and previous point, and every version there
 #
 # SITE_VER names the recipe commit, so install-site refuses a recipe tree with
-# uncommitted changes, and a driver source that is not a committed, unmodified
-# file in a git checkout: an edit would otherwise ship to every user under a
-# name that does not describe it. A version that is live is never rebuilt in
+# uncommitted changes (a submodule moved off its pin shows up there too), a
+# driver pin that fails check-pins, and a driver source that is not a
+# committed, unmodified file in a git checkout: any of those would ship to
+# every user under a name that does not describe it. A version that is live is never rebuilt in
 # place. The first publish has no `previous`; undoing it is removing the
 # install link, which puts every user back on their own rung (haps-openocd
 # falls through to the per-user build).
@@ -586,6 +633,12 @@ install-site:
 		echo "$$dirty" | sed 's/^/          /' >&2; \
 		echo "        $(SITE_VER) would name $(RECIPE_SHA) and not describe what was built." >&2; \
 		exit 1; \
+	fi
+	@if [ -n "$(strip $(SUBMODULES))" ]; then \
+		$(MAKE) --no-print-directory check-pins || { \
+			echo "install-site: FAILED -- a driver pin will not clone for everyone (above)." >&2; \
+			echo "        A site version names a recipe commit; that commit must build anywhere." >&2; \
+			exit 1; }; \
 	fi
 	@$(foreach d,$(DRIVERS), \
 		src=$$(readlink -f "$($(d)_SRC)"); dir=$$(dirname "$$src"); \

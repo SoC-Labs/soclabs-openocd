@@ -1,0 +1,19 @@
+# Driver sources, one submodule per repository that owns a driver .c file.
+# `make sources` checks them out at the commits this recipe pins, and
+# `make check-pins` proves each pin is on the `branch` named here, on the
+# remote: a pin that exists only in someone's checkout will not clone.
+#
+# NEVER clone this recipe with --recurse-submodules, and never run
+# `git submodule update --recursive`: nanosoc-ethernet-chiplet has submodules
+# of its own (vendor and tapeout trees) that the recipe does not need, some
+# of which need credentials. `make sources` recurses into none of them.
+[submodule "drivers/ahb_qspi"]
+	path = drivers/ahb_qspi
+	url = https://git.soton.ac.uk/soclabs/ahb_qspi.git
+	branch = master
+	fetchRecurseSubmodules = false
+[submodule "drivers/nanosoc-ethernet-chiplet"]
+	path = drivers/nanosoc-ethernet-chiplet
+	url = https://github.com/SoC-Labs/NanoSoC-Ethernet-Chiplet.git
+	branch = feat/padring-boundary-scan
+	fetchRecurseSubmodules = false
