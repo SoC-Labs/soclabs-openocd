@@ -28,6 +28,8 @@
 #   L3  install PREFIX=B/ (trailing slash) must not reconfigure: configure
 #       strips the slash, so an unnormalised compare would clean and rebuild on
 #       every run.
+#   L5  L1's manifest names the recipe commit, the prefix, configure's own
+#       record of its arguments, and each driver's <origin>@<commit>.
 #   L4  install PREFIX=C CONFIGURE_FLAGS=--bindir=D, with C seeded: the binary
 #       lands in D, so install must FAIL and write NO manifest into C at all.
 #       The cmp guard's own leg: the prefix check passes here, and without the
@@ -58,6 +60,7 @@
 #   M-noclean  reconfigure without clean                -> L2
 #   M-cmp      no cmp before the manifest               -> L4
 #   M-slash    PREFIX not normalised                    -> L3
+#   M-noprov   driver lines without <origin>@<commit>   -> L5
 #   pre-fix    the Makefile before S4                   -> L2
 #   M-dirty    recipe-tree check disabled               -> S6a
 #   M-live     live-version check disabled              -> S6b
@@ -113,6 +116,8 @@ done
 prefix=$(printf '%s' "$prefix" | sed 's:/*$::')
 if [ -n "$bindir" ]; then bindir=$(printf '%s' "$bindir" | sed 's:/*$::'); else bindir='${exec_prefix}/bin'; fi
 echo "configure $*" >> configure.log
+q=; for a in "$@"; do q="$q '$a'"; done
+printf '#!/bin/sh\n[ "$1" = --config ] && echo "%s"\n' "${q# }" > config.status; chmod +x config.status
 cat > Makefile <<'EOF'
 prefix = @PREFIX@
 exec_prefix = ${prefix}
@@ -147,7 +152,8 @@ echo "\$1" >> "$W/drv-test.log"
 exit \${FAKE_TEST_RC:-0}
 EOF
 chmod +x "$DRV/hostio4/test_driver_fixes.sh"
-( cd "$DRV" && "${G[@]}" init -q && "${G[@]}" add -A && "${G[@]}" commit -qm 'fake drivers' ) || { echo "selftest: cannot build the fake drivers" >&2; exit 2; }
+( cd "$DRV" && "${G[@]}" init -q && "${G[@]}" add -A && "${G[@]}" commit -qm 'fake drivers' \
+  && git remote add origin https://example.invalid/fake-drivers.git ) || { echo "selftest: cannot build the fake drivers" >&2; exit 2; }
 
 md5() { md5sum "$1" 2>/dev/null | cut -d' ' -f1; }
 mf_md5() { awk '/^binary_md5/{print $2}' "$1/share/soclabs-openocd/build.manifest" 2>/dev/null; }
@@ -168,9 +174,10 @@ rmake() {
       CONFIGURE_FLAGS= HOST= "$@" >> "$R/make.log" 2>&1
 }
 new_recipe() {  # new_recipe DIR MAKEFILE: a recipe copy, committed, so it is "clean"
-  mkdir -p "$1/patches"
+  mkdir -p "$1/patches" "$1/scripts"
   cp "$2" "$1/Makefile"; cp "$W/fake.pin" "$1/"; cp "$W/fake.patch" "$1/patches/"
-  ( cd "$1" && "${G[@]}" init -q && "${G[@]}" add Makefile fake.pin patches && "${G[@]}" commit -qm recipe )
+  cp "$HERE/../scripts/provenance.sh" "$1/scripts/" 2>/dev/null
+  ( cd "$1" && "${G[@]}" init -q && "${G[@]}" add -A . && "${G[@]}" commit -qm recipe )
 }
 
 install_legs() {
@@ -186,6 +193,17 @@ install_legs() {
   elif [ "$(mf_md5 "$A")" != "$(md5 "$BLT")" ]; then why="manifest does not describe the binary"
   fi
   leg L1 "$why"
+
+  # L5: provenance of L1's install
+  local mf=$A/share/soclabs-openocd/build.manifest dsha; dsha=$(git -C "$DRV" rev-parse HEAD); why=
+  if ! grep -qx "recipe $(git -C "$R" rev-parse HEAD)" "$mf"; then why="no 'recipe <HEAD>' line"
+  elif ! grep -qx "prefix $A" "$mf"; then why="no 'prefix A' line"
+  elif ! grep -qx "configure '--prefix=$A'" "$mf"; then why="no configure line from config.status"
+  elif ! grep -qx "driver ahb_qspi $(md5 "$DRV/ahb_qspi/sw/openocd/ahb_qspi.c") https://example.invalid/fake-drivers.git@$dsha" "$mf"; then why="the ahb_qspi line does not name <origin>@<commit>"
+  elif ! grep -qx "driver hostio4 $(md5 "$DRV/hostio4/hostio4.c") https://example.invalid/fake-drivers.git@$dsha" "$mf"; then why="the hostio4 line does not name <origin>@<commit>"
+  fi
+  [ -f "$mf" ] || why="no manifest"
+  leg L5 "$why"
 
   seed "$B"; sm=$(md5 "$B/bin/openocd")
   echo "-- L2" >> "$R/make.log"; rmake install PREFIX="$B"; rc=$?; why=
@@ -375,6 +393,8 @@ if [ "$MUTANTS" = 1 ]; then
   mutant M-cmp L4 install
   once "$W/Makefile.M-slash"   'override PREFIX  := $(abspath $(PREFIX))' '# (mutant: PREFIX not normalised)'
   mutant M-slash L3 install
+  once "$W/Makefile.M-noprov"  " \$\$('\$(CURDIR)/scripts/provenance.sh' file '\$(\$(d)_SRC)')" ''
+  mutant M-noprov L5 install
   if git -C "$HERE/.." cat-file -e "$PRE_FIX:Makefile" 2>/dev/null; then
     git -C "$HERE/.." show "$PRE_FIX:Makefile" > "$W/Makefile.pre-fix"
     mutant pre-fix L2 install

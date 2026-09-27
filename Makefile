@@ -308,6 +308,14 @@ build: overlay
 # what stops the manifest drifting from the binary -- without it, a rebuild that
 # skipped the manifest would leave a stale manifest vouching for a new binary,
 # which is the same class of lie the manifest exists to catch.
+#
+# Provenance lines say where those bytes came from, so "what is in the site
+# install?" is answered by the file beside it rather than by memory: the
+# recipe commit (-dirty if the tree differed), the upstream pin, the prefix,
+# the configure arguments as config.status recorded them, the host and glibc,
+# and for each driver the <origin>@<commit> of the checkout its source was
+# read from (scripts/provenance.sh). The md5s stay the verdict; the provenance
+# is what a verdict of STALE sends you to look up.
 MANIFEST_DIR  = $(PREFIX)/share/soclabs-openocd
 MANIFEST      = $(MANIFEST_DIR)/build.manifest
 
@@ -331,7 +339,13 @@ install: build
 	   echo "# 'make verify' compares these against the live binary and the"; \
 	   echo "# CURRENT driver sources. A mismatch means the binary is stale."; \
 	   echo "binary_md5 $$(md5sum '$(BUILD_DIR)/src/openocd' | cut -d' ' -f1)"; \
-	   $(foreach d,$(DRIVERS),echo "driver $(d) $$(md5sum '$(abspath $($(d)_SRC))' | cut -d' ' -f1)";) \
+	   $(foreach d,$(DRIVERS),echo "driver $(d) $$(md5sum '$(abspath $($(d)_SRC))' | cut -d' ' -f1) $$('$(CURDIR)/scripts/provenance.sh' file '$($(d)_SRC)')";) \
+	   echo "recipe $$('$(CURDIR)/scripts/provenance.sh' tree '$(CURDIR)')"; \
+	   echo "openocd_pin $(PINNED_SHA)"; \
+	   echo "prefix $(PREFIX)"; \
+	   echo "configure $$(cd $(BUILD_DIR) && ./config.status --config)"; \
+	   echo "built_on $$(hostname -s) glibc-$$(ldd --version 2>/dev/null | awk 'NR==1{print $$NF}')"; \
+	   echo "built_at $$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
 	 } > "$(MANIFEST)"
 	@echo "install: manifest at $(MANIFEST)"
 	@$(MAKE) --no-print-directory verify-bin BIN="$(PREFIX)/bin/openocd" MANIFEST_IN="$(MANIFEST)"
@@ -405,17 +419,20 @@ verify-bin:
 		else \
 			$(foreach d,$(DRIVERS), \
 			  rec=$$(awk -v n="$(d)" '$$1=="driver" && $$2==n {print $$3}' "$$m"); \
+			  prov=$$(awk -v n="$(d)" '$$1=="driver" && $$2==n {print $$4}' "$$m"); \
 			  cur=$$(md5sum "$(abspath $($(d)_SRC))" 2>/dev/null | cut -d' ' -f1); \
 			  if [ -n "$$cur" ] && [ "$$rec" != "$$cur" ]; then \
 			    echo "verify: FAIL -- '$(d)' is STALE in this binary." >&2; \
-			    echo "        built from $$rec" >&2; \
+			    echo "        built from $$rec $${prov:+($$prov)}" >&2; \
 			    echo "        source is  $$cur" >&2; \
 			    echo "        The driver IS present, so a name check passes -- it is the WRONG" >&2; \
 			    echo "        VERSION. Re-run 'make install' (or install-remote HOST=...)." >&2; \
 			    fail=1; \
 			  elif [ -n "$$cur" ]; then \
-			    echo "verify: OK   -- '$(d)' is current ($$cur)"; \
+			    echo "verify: OK   -- '$(d)' is current ($$cur)$${prov:+ from $$prov}"; \
 			  fi; ) \
+			r=$$(awk '$$1=="recipe"{print $$2}' "$$m"); \
+			if [ -n "$$r" ]; then echo "verify: built by recipe $$r for prefix $$(awk '$$1=="prefix"{print $$2}' "$$m")"; fi; \
 		fi; \
 	fi; \
 	if [ $$fail -ne 0 ]; then \
@@ -739,7 +756,8 @@ site-status:
 		if [ ! -x "$$b" ]; then s="NO BINARY"; \
 		elif [ "$$(md5sum < "$$b" | cut -d' ' -f1)" = "$$(awk '/^binary_md5/{print $$2}' "$$m" 2>/dev/null)" ]; then s="manifest matches"; \
 		else s="MANIFEST DOES NOT DESCRIBE THE BINARY"; fi; \
-		echo "  version  $$(basename "$$d"): $$s"; \
+		r=$$(awk '$$1=="recipe"{print $$2}' "$$m" 2>/dev/null); \
+		echo "  version  $$(basename "$$d"): $$s$${r:+, recipe $$r}"; \
 	done
 
 # --- clean / distclean -------------------------------------------------------
